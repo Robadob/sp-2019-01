@@ -18,6 +18,7 @@
 #include <texture_fetch_functions.h>
 #include <cub/cub.cuh>
 #include <glm/gtc/epsilon.hpp>
+#include <glm/gtx/vector_angle.hpp>
 #define EPSILON 0.005f
 //#define CIRCLES
 //Cuda call
@@ -229,6 +230,23 @@ out[index] = glm::vec4(average, vel);
 out[index] = glm::vec4(pos + average, vel);
 #endif
 }
+
+__forceinline__ __device__ void randomWalk(const glm::vec2 &mePos, const glm::vec2 &meVec, const glm::vec2 &msgPos, const glm::vec2 &msgVec)
+{
+	//Lightweight bounds check
+	glm::vec2 offset = msgPos-mePos;
+	float distance = glm::length(offset);
+	if(distance <d_RADIUS)
+	{
+		//FOV Check
+		float angle = glm::angle(meVec, offset);
+		if(angle<1.5708)//d_HALF_FOV (90 degrees in radians)
+		{
+			//Do random walk model
+		}
+	}
+
+}
 /**
 * Kernel must be launched 1 block per bin
 * This removes the necessity of __launch_bounds__(64) as all threads in block are touching the same messages
@@ -236,105 +254,123 @@ out[index] = glm::vec4(pos + average, vel);
 */
 __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 {
-	extern __shared__ float4 sm_messages[];
+	glm::ivec2 relatives[8] = { 
+		glm::ivec2(0, 1),	//North
+		glm::ivec2(1,1),	//North East
+		glm::ivec2(1,0),    //East
+		glm::ivec2(1, -1),	//South East
+		glm::ivec2(0, -1),	//South
+		glm::ivec2(-1, -1), //South West
+		glm::ivec2(-1, 0),	//West
+		glm::ivec2(-1, 1)	//North West
+	};
+	enum Quadrant {NW, NE, SW, SE};
+
+	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+	//Kill excess threads
+	if (index >= d_agentCount) return;
 
 	//My data
-	glm::ivec2 myBin = glm::ivec2(blockIdx.x, blockIdx.y);
-	unsigned int index = UINT_MAX;
+	glm::vec2 pos = agents[index];
+	glm::ivec2 myBin = getGridPosition(pos);
+	int __relativeIndex;
+	unsigned int __relativeCount;
 	glm::vec2 pos, vel;
 	{
+		//Load self
+		pos = glm::vec2(agents[index].x, agents[index].y);
+		vel = glm::vec2(agents[index].z, agents[index].w);
+	}
+	{
+		//Process relative (0, 0)
 		unsigned int binHash = getHash(myBin);
 		unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
 		unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
 		unsigned int binCount = binEnd - binStart;
-		if (threadIdx.x < binCount)
+		for (unsigned int j = binStart; j<binEnd; ++j)
 		{
-			index = binStart + threadIdx.x;
-			pos = glm::vec2(agents[index].x, agents[index].y);
-			vel = glm::vec2(agents[index].z, agents[index].w);
-		}
-	}
-	//Model data
-	unsigned int count = 0;
-	glm::vec2 average = glm::vec2(0);
-	//Iterate each bin in the Moore neighbourhood
-	glm::ivec2 currentBin;
-	for (int _x = -1; _x <= 1; ++_x)
-	{
-		currentBin.x = myBin.x + _x;
-		if (currentBin.x >= 0 && currentBin.x < d_gridDim)
-		{
-			for (int _y = -1; _y <= 1; ++_y)
+			if (j != index)
 			{
-				currentBin.y = myBin.y + _y;
-				if (currentBin.y >= 0 && currentBin.y < d_gridDim)
-				{
-					//Now we must load all messages from currentBin into shared memory
-					//WARNING: There is an unhandled edge case whereby we dont have enough shared memory, and must segment the load
-					unsigned int binHash = getHash(currentBin);
-					unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
-					unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
-					unsigned int binCount = binEnd - binStart;
-					//If this bin has a message for us to load
-					if (threadIdx.x<binCount)
-					{
-						//Load the message into shared memory
-						float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
-						sm_messages[threadIdx.x] = message;
-					}
-					//Wait for all loading to be completed
-					__syncthreads();
-					//If we host a valid message...
-					if (index != UINT_MAX)
-					{
-						//Iterate the loaded messages
-						for (unsigned int i = 0; i<binCount; ++i)
-						{
-							//Skip our own loaded message
-							if (_x == 0 && _y == 0 && i == threadIdx.x)
-								continue;
-							float4 message = sm_messages[i];
-							glm::vec2 *_pos = (glm::vec2*)&message;
-							glm::vec2 *_vec = (glm::vec2*)&(message.z);
-#ifndef CIRCLES
-							if (distance(*_pos, pos)<d_RADIUS)
-							{
-								//message.z = pow(sqrt(sin(distance(_pos, pos))),3.1f);//Bonus compute
-								average += *_pos;
-								count++;
-							}
-#else
-							glm::vec2 toLoc = (*_pos) - pos;//Difference
-							float separation = length(toLoc);
-							if (separation < d_RADIUS && separation > 0)
-							{
-								const float REPULSE_FACTOR = 0.05f;
-								float k = sinf((separation / d_RADIUS)*3.141*-2)*REPULSE_FACTOR;
-								toLoc /= separation;//Normalize (without recalculating seperation)
-								average += k * toLoc;
-								count++;
-							}
-#endif
-						}
-					}
-					//Wait for all processing to be completed, so that we can proceed to next bin
-					__syncthreads();
-				}
-				//Could optimise here, by handling binHash outside the loop
-				//For this would need to iterate _y on the outside, so hashes are contiguous
+				float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
+				glm::vec2 _pos = glm::vec2(message.x, message.y);
+				glm::vec2 _vel = glm::vec2(message.z, message.w);
+				randomWalk(pos, vel, _pos, _vel);
 			}
 		}
 	}
-	//If we have a valid message...
-	if (index != UINT_MAX)
+	//Identify the relative element which contains dir
 	{
-		average /= count>0 ? count : 1;
-#ifndef CIRCLES
-		out[index] = glm::vec4(average, vel);
-#else
-		out[index] = glm::vec4(pos + average, vel);
-#endif
+		//incremenet pos by vel * unit
+		glm::vec2 dest = pos + (glm::normalize(vel)*d_binWidth);
+		//Find which bin this resides in
+		glm::ivec2 destBin = getGridPosition(dest);
+		//Convert this bin to a relative index
+		glm::ivec2 destOffset = myBin - destBin;
+		assert(destOffset != glm::ivec2(0));
+		//Identify index where that falls in 'relatives' array
+		if (destOffset.x == 1)
+		{
+			__relativeIndex = 2 - destOffset.y;
+		}
+		else if (destOffset.x == -1)
+		{
+			__relativeIndex = 6 - destOffset.y;
+		}
+		else
+		{
+			__relativeIndex = 2 - 2*destOffset.y;
+		}
+	//Rotate about circle -FOV/2 (how many elements is this?
+		//180 degrees requires 2 on either side of central
+		__relativeIndex -= 2;
+		__relativeCount = 5;
+		//
+		glm::vec2 qPos = pos - glm::ivec2(pos);
+		if (qPos.x > 0)qPos.x = 1;
+		else if(qPos.x < 0)qPos.x = -1;
+		if (qPos.y > 0)qPos.y = 1;
+		else if (qPos.y < 0)qPos.y = -1;
+		glm::ivec2 _qPos = qPos;
+		//+-1 on either side, based on the quadrant relative to velocity
+		//Temp(?) max all
+		__relativeIndex -= 1;
+		__relativeCount += 2;
+		//Correct for overflow
+		__relativeIndex = (__relativeIndex + 8) % 8;//+8 to account for underflow (% is remainder op, not mod)
 	}
+	//Iterate FOV relatives across
+	for(unsigned int i = 0;i<__relativeCount;++i)
+	{
+		unsigned int currentIndex = __relativeIndex + i;
+		currentIndex = currentIndex >= 8 ? currentIndex - 8 : currentIndex;//(__relativeIndex+i)%8
+		glm::ivec2 currentBin = myBin + relatives[currentIndex];
+		if (currentBin.x >= 0 && currentBin.x < d_gridDim)
+		{
+			if (currentBin.y >= 0 && currentBin.y < d_gridDim)
+			{
+				//Now we must load all messages from currentBin
+				unsigned int binHash = getHash(currentBin);
+				unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
+				unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
+				for(unsigned int j = binStart;j<binEnd;++j)
+				{
+					float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
+					glm::vec2 _pos = glm::vec2(message.x, message.y);
+					glm::vec2 _vel = glm::vec2(message.z, message.w);
+					randomWalk(pos, vel, _pos, _vel);
+				}
+			}
+		}
+				
+	}
+	
+	
+	//Output
+#ifndef CIRCLES
+	out[index] = glm::vec4(average, vel);
+#else
+	out[index] = glm::vec4(pos + average, vel);
+#endif
 }
 
 
