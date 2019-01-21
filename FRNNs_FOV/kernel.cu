@@ -143,6 +143,43 @@ int requiredSM(int blockSize)
 	//We could use dp.sharedMemPerBlock/N to improve occupancy
 	return (int)min(PBM_max_count * sizeof(float2), dp.sharedMemPerBlock);//Need to limit this to the max SM
 }
+
+__forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2 &meVec, const glm::vec2 &msgPos, const glm::vec2 &msgVec, glm::vec2 &nVel, glm::vec2 &aVel)
+{
+#define SPEED_LIMIT 1.0f
+#define TIME_SCALER	0.0003f
+#define MIN_DISTANCE 0.0001f
+#define SCALE_FACTOR 0.03125
+#define I_SCALER (SCALE_FACTOR*0.35f)
+#define STEER_WEIGHT		0.10f
+#define AVOID_WEIGHT		0.02f
+#define COLLISION_WEIGHT	0.50f
+#define GOAL_WEIGHT			0.20f
+	//Lightweight bounds check
+	glm::vec2 offset = msgPos - mePos;
+	float distance = glm::length(offset);
+	if (distance <d_RADIUS && distance > MIN_DISTANCE)
+	{
+		//FOV Check
+		float angle = glm::angle(meVec, offset);
+		if (angle<1.5708)//d_HALF_FOV (90 degrees in radians)
+		{
+			float perception = 45.0f;
+			//STEER
+			if ((angle < glm::radians(perception)) || (angle > 3.14159265f - glm::radians(perception))) {
+				glm::vec2 s_velocity = -offset;
+				s_velocity *= powf(I_SCALER / distance, 1.25f)*STEER_WEIGHT;
+				nVel += s_velocity;
+			}
+
+			//AVOID
+			glm::vec2 a_velocity = -offset;
+			a_velocity *= powf(I_SCALER / distance, 2.00f)*AVOID_WEIGHT;
+			aVel += a_velocity;
+		}
+	}
+
+}
 /**
 * Kernel must be launched 1 block per bin
 * This removes the necessity of __launch_bounds__(64) as all threads in block are touching the same messages
@@ -156,10 +193,10 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 	if (index >= d_agentCount) return;
 	glm::vec2 pos = glm::vec2(agents[index].x, agents[index].y);
 	glm::vec2 vel = glm::vec2(agents[index].z, agents[index].w);
+	glm::vec2 navigate_velocity = glm::vec2(0);
+	glm::vec2 avoid_velocity = glm::vec2(0);
 	glm::ivec2 gridPos = getGridPosition(pos);
 	glm::ivec2 gridPosRelative;
-	unsigned int count = 0;
-	glm::vec2 average = glm::vec2(0);
 
 	for (gridPosRelative.y = -1; gridPosRelative.y <= 1; gridPosRelative.y++)
 	{//ymin to ymax
@@ -192,30 +229,13 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 			//Iterate messages in range
 			for (unsigned int i = binStart; i < binEnd; ++i)
 			{
-				if (i != index)//Ignore self
+				//if (i != index)//Ignore self
 				{
 					float4 message = tex1Dfetch(d_texMessages, i);
 					glm::vec2 *_pos = (glm::vec2*)&message;
-					glm::vec2 *_vec = (glm::vec2*)&(message.z);
-#ifndef CIRCLES
-					if (distance(*_pos, pos) < d_RADIUS)
-					{
-						//message.z = pow(sqrt(sin(distance(_pos, pos))),3.1f);//Bonus compute
-						average += *_pos;
-						count++;
-					}
-#else
-					glm::vec2 toLoc = (*_pos) - pos;//Difference
-					float separation = length(toLoc);
-					if (separation < d_RADIUS && separation > 0)
-					{
-						const float REPULSE_FACTOR = 0.05f;
-						float k = sinf((separation / d_RADIUS)*3.141*-2)*REPULSE_FACTOR;
-						toLoc /= separation;//Normalize (without recalculating seperation)
-						average += k * toLoc;
-						count++;
-					}
-#endif
+					glm::vec2 *_vel = (glm::vec2*)&(message.z);
+
+					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 				}
 			}
 			}
@@ -223,29 +243,29 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 		}
 #endif
 	}
-average /= count>0 ? count : 1;
-#ifndef CIRCLES
-out[index] = glm::vec4(average, vel);
-#else
-out[index] = glm::vec4(pos + average, vel);
-#endif
-}
 
-__forceinline__ __device__ void randomWalk(const glm::vec2 &mePos, const glm::vec2 &meVec, const glm::vec2 &msgPos, const glm::vec2 &msgVec)
-{
-	//Lightweight bounds check
-	glm::vec2 offset = msgPos-mePos;
-	float distance = glm::length(offset);
-	if(distance <d_RADIUS)
+	//Process result of avoidsum
 	{
-		//FOV Check
-		float angle = glm::angle(meVec, offset);
-		if(angle<1.5708)//d_HALF_FOV (90 degrees in radians)
-		{
-			//Do random walk model
+		//random walk goal
+		glm::vec2 goal_velocity = vel * GOAL_WEIGHT;
+
+		//maximum velocity rule
+		goal_velocity += navigate_velocity + avoid_velocity;
+
+		float current_speed = length(vel) + 0.025f;
+		vel += current_speed * goal_velocity;
+		float speed = length(vel);
+		//limit speed
+		if (speed >= SPEED_LIMIT) {
+			vel = normalize(vel)*SPEED_LIMIT;
+			speed = SPEED_LIMIT;
 		}
+
+		//update position
+		pos += vel*TIME_SCALER;
 	}
 
+out[index] = glm::vec4(pos, vel);
 }
 /**
 * Kernel must be launched 1 block per bin
@@ -271,8 +291,8 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 	if (index >= d_agentCount) return;
 
 	//My data
-	glm::vec2 pos = agents[index];
-	glm::ivec2 myBin = getGridPosition(pos);
+	glm::vec2 navigate_velocity = glm::vec2(0.0f, 0.0f);
+	glm::vec2 avoid_velocity = glm::vec2(0.0f, 0.0f);
 	int __relativeIndex;
 	unsigned int __relativeCount;
 	glm::vec2 pos, vel;
@@ -281,12 +301,13 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		pos = glm::vec2(agents[index].x, agents[index].y);
 		vel = glm::vec2(agents[index].z, agents[index].w);
 	}
+	glm::ivec2 myBin = getGridPosition(pos);
 	{
 		//Process relative (0, 0)
 		unsigned int binHash = getHash(myBin);
 		unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
 		unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
-		unsigned int binCount = binEnd - binStart;
+		//unsigned int binCount = binEnd - binStart;
 		for (unsigned int j = binStart; j<binEnd; ++j)
 		{
 			if (j != index)
@@ -294,7 +315,7 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 				float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
 				glm::vec2 _pos = glm::vec2(message.x, message.y);
 				glm::vec2 _vel = glm::vec2(message.z, message.w);
-				randomWalk(pos, vel, _pos, _vel);
+				avoidSum(pos, vel, _pos, _vel, navigate_velocity, avoid_velocity);
 			}
 		}
 	}
@@ -325,7 +346,7 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		__relativeIndex -= 2;
 		__relativeCount = 5;
 		//
-		glm::vec2 qPos = pos - glm::ivec2(pos);
+		glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
 		if (qPos.x > 0)qPos.x = 1;
 		else if(qPos.x < 0)qPos.x = -1;
 		if (qPos.y > 0)qPos.y = 1;
@@ -357,20 +378,37 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 					float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
 					glm::vec2 _pos = glm::vec2(message.x, message.y);
 					glm::vec2 _vel = glm::vec2(message.z, message.w);
-					randomWalk(pos, vel, _pos, _vel);
+					avoidSum(pos, vel, _pos, _vel, navigate_velocity, avoid_velocity);
 				}
 			}
 		}
 				
 	}
+
+	//Process result of avoidsum
+	{
+		//random walk goal
+		glm::vec2 goal_velocity = vel * GOAL_WEIGHT;
+
+		//maximum velocity rule
+		goal_velocity += navigate_velocity + avoid_velocity;
+
+		float current_speed = length(vel) + 0.025f;
+		vel += current_speed * goal_velocity;
+		float speed = length(vel);
+		//limit speed
+		if (speed >= SPEED_LIMIT) {
+			vel = normalize(vel)*SPEED_LIMIT;
+			speed = SPEED_LIMIT;
+		}
+
+		//update position
+		pos += vel*TIME_SCALER;
+	}
 	
 	
 	//Output
-#ifndef CIRCLES
-	out[index] = glm::vec4(average, vel);
-#else
-	out[index] = glm::vec4(pos + average, vel);
-#endif
+	out[index] = glm::vec4(pos, vel);
 }
 
 
