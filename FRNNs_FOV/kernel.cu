@@ -62,11 +62,6 @@ __device__ __constant__ float d_RADIUS;
 __device__ __constant__ float d_R_SIN_45;
 __device__ __constant__ float d_binWidth;
 
-//For thread block max bin check
-unsigned int *d_PBM_max_count;
-unsigned int PBM_max_count = 0;
-unsigned int PBM_max_Moore_count = 0;//This is unused, it could be used if we wished to load entire Moore neighbourhood at once to shared mem, instead we load a bin at a time
-
 texture<float4> d_texMessages;//float2 pos, float2 velocity
 texture<unsigned int> d_texPBM;
 
@@ -93,6 +88,11 @@ __device__ __forceinline__ glm::ivec2 getGridPosition(glm::vec2 worldPos)
 {
 	//Clamp each grid coord to 0<=x<dim
 	return clamp(floor((worldPos / d_environmentWidth_float)*d_gridDim_float), glm::vec2(0), glm::vec2((float)d_gridDim - 1));
+}
+__device__ __forceinline__ glm::ivec2 _getGridPosition(glm::vec2 worldPos)
+{
+	//Clamp each grid coord to 0<=x<dim
+	return floor((worldPos / d_environmentWidth_float)*d_gridDim_float), glm::vec2(0), glm::vec2((float)d_gridDim - 1);
 }
 __device__ __forceinline__ unsigned int getHash(glm::ivec2 gridPos)
 {
@@ -133,17 +133,6 @@ __global__ void reorderLocationMessages(
 	//Order messages into swap space
 	ordered_messages[sorted_index] = unordered_messages[index];
 }
-int requiredSM(int blockSize)
-{
-	cudaDeviceProp dp;
-	int device;
-	cudaGetDevice(&device);
-	memset(&dp, sizeof(cudaDeviceProp), 0);
-	cudaGetDeviceProperties(&dp, device);
-	//We could use dp.sharedMemPerBlock/N to improve occupancy
-	return (int)min(PBM_max_count * sizeof(float2), dp.sharedMemPerBlock);//Need to limit this to the max SM
-}
-
 __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2 &meVec, const glm::vec2 &msgPos, const glm::vec2 &msgVec, glm::vec2 &nVel, glm::vec2 &aVel)
 {
 #define SPEED_LIMIT 1.0f
@@ -187,7 +176,7 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 */
 __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *agents, glm::vec4 *out)
 {
-#define STRIPS
+//#define STRIPS
 	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	//Kill excess threads
 	if (index >= d_agentCount) return;
@@ -199,49 +188,54 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 	glm::ivec2 gridPosRelative;
 
 	for (gridPosRelative.y = -1; gridPosRelative.y <= 1; gridPosRelative.y++)
+	//for (gridPosRelative.y = 0; gridPosRelative.y <= 0; gridPosRelative.y++)
 	{//ymin to ymax
 		int currentBinY = gridPos.y + gridPosRelative.y;
 		if (currentBinY >= 0 && currentBinY < d_gridDim)
 		{
 #ifndef STRIPS
 			for (gridPosRelative.x = -1; gridPosRelative.x <= 1; gridPosRelative.x++)
+			//for (gridPosRelative.x = 0; gridPosRelative.x <= 0; gridPosRelative.x++)
 			{//xmin to xmax
 				int currentBinX = gridPos.x + gridPosRelative.x;
-				//Find bin start and end
-				unsigned int binHash = getHash(glm::ivec2(currentBinX, currentBinY));
-				//if (binHash>d_gridDim*d_gridDim)
-				//{
-				//    printf("Hash: %d, gridDim: %d, pos: (%d, %d)\n", binHash, d_gridDim, tGridPos.x, tGridPos.y);
-				//}
-				unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
-				unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
+				if (currentBinX >= 0 && currentBinX < d_gridDim)
+				{
+					//Find bin start and end
+					unsigned int binHash = getHash(glm::ivec2(currentBinX, currentBinY));
+					unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
+					unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
 #else
 
-			int currentBinX = gridPos.x - 1;
-			currentBinX = currentBinX >= 0 ? currentBinX : 0;
-			unsigned int binHash = getHash(glm::ivec2(currentBinX, currentBinY));
-			unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
-			currentBinX = gridPos.x + 1;
-			currentBinX = currentBinX < d_gridDim ? currentBinX : d_gridDim - 1;
-			binHash = getHash(glm::ivec2(currentBinX, currentBinY));
-			unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
+					int currentBinX = gridPos.x - 1;
+					currentBinX = currentBinX >= 0 ? currentBinX : 0;
+					unsigned int binHash = getHash(glm::ivec2(currentBinX, currentBinY));
+					unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
+					currentBinX = gridPos.x + 1;
+					currentBinX = currentBinX < d_gridDim ? currentBinX : d_gridDim - 1;
+					binHash = getHash(glm::ivec2(currentBinX, currentBinY));
+					unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
 #endif
-			//Iterate messages in range
-			for (unsigned int i = binStart; i < binEnd; ++i)
-			{
-				//if (i != index)//Ignore self
-				{
-					float4 message = tex1Dfetch(d_texMessages, i);
-					glm::vec2 *_pos = (glm::vec2*)&message;
-					glm::vec2 *_vel = (glm::vec2*)&(message.z);
+					//Iterate messages in range
+					for (unsigned int i = binStart; i < binEnd; ++i)
+					{
+						//if (i != index)//Ignore self
+						{
+							float4 message = tex1Dfetch(d_texMessages, i);
+							//if(binHash==12)
+							//{
+							//	printf("(%.3f, %.3f, %.3f, %.3f)\n", message.x, message.y, message.z, message.w);
+							//}
+							glm::vec2 *_pos = (glm::vec2*)&message;
+							glm::vec2 *_vel = (glm::vec2*)&(message.z);
 
-					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
+							avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
+						}
+					}
+#ifndef STRIPS
 				}
 			}
-			}
-#ifndef STRIPS
-		}
 #endif
+		}
 	}
 
 	//Process result of avoidsum
@@ -291,16 +285,12 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 	if (index >= d_agentCount) return;
 
 	//My data
-	glm::vec2 navigate_velocity = glm::vec2(0.0f, 0.0f);
-	glm::vec2 avoid_velocity = glm::vec2(0.0f, 0.0f);
+	glm::vec2 pos = glm::vec2(agents[index].x, agents[index].y);
+	glm::vec2 vel = glm::vec2(agents[index].z, agents[index].w);
+	glm::vec2 navigate_velocity = glm::vec2(0);
+	glm::vec2 avoid_velocity = glm::vec2(0);
 	int __relativeIndex;
 	unsigned int __relativeCount;
-	glm::vec2 pos, vel;
-	{
-		//Load self
-		pos = glm::vec2(agents[index].x, agents[index].y);
-		vel = glm::vec2(agents[index].z, agents[index].w);
-	}
 	glm::ivec2 myBin = getGridPosition(pos);
 	{
 		//Process relative (0, 0)
@@ -312,53 +302,68 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		{
 			if (j != index)
 			{
-				float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
-				glm::vec2 _pos = glm::vec2(message.x, message.y);
-				glm::vec2 _vel = glm::vec2(message.z, message.w);
-				avoidSum(pos, vel, _pos, _vel, navigate_velocity, avoid_velocity);
+				float4 message = tex1Dfetch(d_texMessages, j);
+				//if (binHash == 12)
+				//{
+				//	printf("(%.3f, %.3f, %.3f, %.3f)\n", message.x, message.y, message.z, message.w);
+				//}
+				glm::vec2 *_pos = (glm::vec2*)&message;
+				glm::vec2 *_vel = (glm::vec2*)&(message.z);
+				avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 			}
 		}
 	}
-	//Identify the relative element which contains dir
-	{
-		//incremenet pos by vel * unit
-		glm::vec2 dest = pos + (glm::normalize(vel)*d_binWidth);
-		//Find which bin this resides in
-		glm::ivec2 destBin = getGridPosition(dest);
-		//Convert this bin to a relative index
-		glm::ivec2 destOffset = myBin - destBin;
-		assert(destOffset != glm::ivec2(0));
-		//Identify index where that falls in 'relatives' array
-		if (destOffset.x == 1)
-		{
-			__relativeIndex = 2 - destOffset.y;
-		}
-		else if (destOffset.x == -1)
-		{
-			__relativeIndex = 6 - destOffset.y;
-		}
-		else
-		{
-			__relativeIndex = 2 - 2*destOffset.y;
-		}
-	//Rotate about circle -FOV/2 (how many elements is this?
-		//180 degrees requires 2 on either side of central
-		__relativeIndex -= 2;
-		__relativeCount = 5;
-		//
-		glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
-		if (qPos.x > 0)qPos.x = 1;
-		else if(qPos.x < 0)qPos.x = -1;
-		if (qPos.y > 0)qPos.y = 1;
-		else if (qPos.y < 0)qPos.y = -1;
-		glm::ivec2 _qPos = qPos;
-		//+-1 on either side, based on the quadrant relative to velocity
-		//Temp(?) max all
-		__relativeIndex -= 1;
-		__relativeCount += 2;
-		//Correct for overflow
-		__relativeIndex = (__relativeIndex + 8) % 8;//+8 to account for underflow (% is remainder op, not mod)
-	}
+	////Identify the relative element which contains dir
+	//{
+	//	//incremenet pos by vel * unit
+	//	glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
+	//	glm::vec2 t;
+	//	//Identify distance to next cell according to velocity
+	//	t.x = vel.x > 0 ? _dest.x : 1.0f - (_dest.x);
+	//	t.y = vel.y > 0 ? _dest.y : 1.0f - (_dest.y);
+	//	//Convert this distance into time
+	//	t.x = vel.x != 0 ? t.x / vel.x : FLT_MAX;
+	//	t.y = vel.y != 0 ? t.y / vel.y : FLT_MAX;
+	//	//Extend pos to next cell
+	//	glm::vec2 dest = pos + (vel*glm::min(t.x, t.y));
+	//	//Find which bin this resides in
+	//	glm::ivec2 destBin = _getGridPosition(dest);//Not clamped, may go out of bounds
+	//	//Convert this bin to a relative index
+	//	glm::ivec2 destOffset = myBin - destBin;
+	//	assert(destOffset != glm::ivec2(0));
+	//	//Identify index where that falls in 'relatives' array
+	//	if (destOffset.x == 1)
+	//	{
+	//		__relativeIndex = 2 - destOffset.y;
+	//	}
+	//	else if (destOffset.x == -1)
+	//	{
+	//		__relativeIndex = 6 - destOffset.y;
+	//	}
+	//	else
+	//	{
+	//		__relativeIndex = 2 - 2*destOffset.y;
+	//	}
+	////Rotate about circle -FOV/2 (how many elements is this?
+	//	//180 degrees requires 2 on either side of central
+	//	__relativeIndex -= 2;
+	//	__relativeCount = 5;
+	//	//
+	//	glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
+	//	if (qPos.x > 0)qPos.x = 1;
+	//	else if(qPos.x < 0)qPos.x = -1;
+	//	if (qPos.y > 0)qPos.y = 1;
+	//	else if (qPos.y < 0)qPos.y = -1;
+	//	glm::ivec2 _qPos = qPos;
+	//	//+-1 on either side, based on the quadrant relative to velocity
+	//	//Temp(?) max all
+	//	__relativeIndex -= 1;
+	//	__relativeCount += 2;
+	//	//Correct for overflow
+	//	__relativeIndex = (__relativeIndex + 8) % 8;//+8 to account for underflow (% is remainder op, not mod)
+	//}
+	__relativeCount = 8;
+	__relativeIndex = 0;
 	//Iterate FOV relatives across
 	for(unsigned int i = 0;i<__relativeCount;++i)
 	{
@@ -375,17 +380,17 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 				unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
 				for(unsigned int j = binStart;j<binEnd;++j)
 				{
-					float4 message = tex1Dfetch(d_texMessages, binStart + threadIdx.x);
-					glm::vec2 _pos = glm::vec2(message.x, message.y);
-					glm::vec2 _vel = glm::vec2(message.z, message.w);
-					avoidSum(pos, vel, _pos, _vel, navigate_velocity, avoid_velocity);
+					float4 message = tex1Dfetch(d_texMessages, j);
+					glm::vec2 *_pos = (glm::vec2*)&message;
+					glm::vec2 *_vel = (glm::vec2*)&(message.z);
+					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 				}
 			}
 		}
 				
 	}
 
-	//Process result of avoidsum
+	//Process result of avoid sum
 	{
 		//random walk goal
 		glm::vec2 goal_velocity = vel * GOAL_WEIGHT;
@@ -508,14 +513,9 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 		unsigned int *d_PBM = nullptr;
 		CUDA_CALL(cudaMalloc(&d_PBM_counts, (BIN_COUNT + 1) * sizeof(unsigned int)));
 		CUDA_CALL(cudaMalloc(&d_PBM, (BIN_COUNT + 1) * sizeof(unsigned int)));
-		//Prep for threadblocks
-		CUDA_CALL(cudaMalloc(&d_PBM_max_count, sizeof(unsigned int)));
-		CUDA_CALL(cudaMemset(d_PBM_max_count, 0, sizeof(unsigned int)));
 		{//Resize cub temp if required
-			size_t bytesCheck, bytesCheck2;
+			size_t bytesCheck;
 			cub::DeviceScan::ExclusiveSum(nullptr, bytesCheck, d_PBM, d_PBM_counts, BIN_COUNT + 1);
-			cub::DeviceReduce::Max(nullptr, bytesCheck2, d_PBM_counts, d_PBM_max_count, BIN_COUNT);
-			bytesCheck = glm::max(bytesCheck, bytesCheck2);
 			if (bytesCheck > d_CUB_temp_storage_bytes)
 			{
 				if (d_CUB_temp_storage)
@@ -565,14 +565,6 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 					reorderLocationMessages << <gridSize, blockSize >> > (d_keys, d_vals, d_PBM, d_out, d_agents);
 					CUDA_CHECK();
 				}
-				if (!isControl)
-				{//Calc max bin size (for threadblocks)
-					cub::DeviceReduce::Max(d_CUB_temp_storage, d_CUB_temp_storage_bytes, d_PBM_counts, d_PBM_max_count, BIN_COUNT);
-					CUDA_CALL(cudaGetLastError());
-					CUDA_CALL(cudaMemcpy(&PBM_max_count, d_PBM_max_count, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-					//Calc moore size (bin size^dims?)
-					//PBM_max_Moore_count = (unsigned int)pow(PBM_max_count, 2);//2==2D//Unused, requires 9x shared mem in 2D, 27x in 3D
-				}
 				{//Fill PBM and Message Texture Buffers																			  
 					CUDA_CALL(cudaDeviceSynchronize());//Wait for return
 					CUDA_CALL(cudaBindTexture(nullptr, d_texMessages, d_agents, sizeof(glm::vec4) * AGENT_COUNT));
@@ -588,19 +580,20 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
+					printf("control\n");
 					neighbourSearch_control << <gridSize, blockSize >> > (d_agents, d_out);
 					CUDA_CHECK();
 				}
 				else
 				{
 					//Each message samples radial neighbours (static model)
-					int blockSize = PBM_max_count;   //blockSize == largest bin size
-					dim3 gridSize;
-					gridSize.x = GRID_DIMS.x;
-					gridSize.y = GRID_DIMS.y;
-					gridSize.z = 1;// GRID_DIMS.z;
-								   //Copy messages from d_agents to d_out, in hash order
-					neighbourSearch << <gridSize, blockSize, requiredSM(blockSize) >> > (d_agents, d_out);
+					int blockSize;   // The launch configurator returned block size 
+					CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
+																														 // Round up according to array size
+					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
+					//Copy messages from d_agents to d_out, in hash order
+					printf("test\n");
+					neighbourSearch << <gridSize, blockSize >> > (d_agents, d_out);
 					CUDA_CHECK();
 				}
 				CUDA_CALL(cudaDeviceSynchronize());
@@ -654,7 +647,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 		CUDA_CALL(cudaFree(d_PBM));
 		//log();
 		printf("Control:     PBM: %.2fms, Kernel: %.2fms\n", pbmMillis_control, kernelMillis_control);
-		printf("ThreadBlock: PBM: %.2fms, Kernel: %.2fms\n", pbmMillis, kernelMillis);
+		printf("Smart FOV: PBM: %.2fms, Kernel: %.2fms\n", pbmMillis, kernelMillis);
 		unsigned int fails = 0;
 #ifndef CIRCLES
 
