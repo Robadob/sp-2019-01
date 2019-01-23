@@ -288,8 +288,6 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 	glm::vec2 vel = glm::vec2(agents[index].z, agents[index].w);
 	glm::vec2 navigate_velocity = glm::vec2(0);
 	glm::vec2 avoid_velocity = glm::vec2(0);
-	int __relativeIndex;
-	unsigned int __relativeCount;
 	glm::ivec2 myBin = getGridPosition(pos);
 	{
 		//Process relative (0, 0)
@@ -312,17 +310,75 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 			}
 		}
 	}
+#define METHOD2
+#ifndef METHOD2
 	//Identify the relative element which contains dir
+	unsigned int __relativeIndex;
+	unsigned int __relativeCount;
 	{
-		//incremenet pos by vel * unit
-		glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
+		//This technique takes central point and estimates sides
+		////incremenet pos by vel * unit
+		//glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
+		//glm::vec2 t;
+		////Identify distance to next cell according to velocity
+		//t.x = vel.x > 0 ? 1 - _dest.x : -(_dest.x);
+		//t.y = vel.y > 0 ? 1 - _dest.y : -(_dest.y);
+		////Convert this distance into time
+		//t.x = vel.x != 0 ? t.x / vel.x : FLT_MAX;
+		//t.y = vel.y != 0 ? t.y / vel.y : FLT_MAX;
+		////Extend pos to next cell
+		//glm::ivec2 relativeBin;
+		//relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
+		//relativeBin.y = t.y <= t.x ? t.y / abs(t.y) : 0;
+		//glm::ivec2 destOffset = myBin + relativeBin;
+		//assert(destOffset != glm::ivec2(0));
+		////Identify index where that falls in 'relatives' array
+		//if (destOffset.x == 1)
+		//{
+		//	__relativeIndex = 2 - destOffset.y;
+		//}
+		//else if (destOffset.x == -1)
+		//{
+		//	__relativeIndex = 6 - destOffset.y;
+		//}
+		//else
+		//{
+		//	__relativeIndex = 2 - 2 * destOffset.y;
+		//}
+		////Rotate about circle -FOV/2 (how many elements is this?
+		////180 degrees requires 2 on either side of central
+		//__relativeIndex -= 2;
+		//__relativeCount = 5;
+		////
+		//glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
+		//if (qPos.x > 0)qPos.x = 1;
+		//else if (qPos.x < 0)qPos.x = -1;
+		//if (qPos.y > 0)qPos.y = 1;
+		//else if (qPos.y < 0)qPos.y = -1;
+		//glm::ivec2 _qPos = qPos;
+		////+-1 on either side, based on the quadrant relative to velocity
+		////Temp(?) max all
+		//__relativeIndex -= 1;
+		//__relativeCount += 2;
+		////Correct for overflow
+		//__relativeIndex += 64;// +8*8 to account for underflow (remainder op inside for loop handles overflow)
+	}
+#else
+	//Identify the relative element for left FOV limit
+	//incremenet pos by vel * unit
+	unsigned int __relativeIndex_left;
+	unsigned int __relativeIndex_right;
+	const glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
+	{
+		glm::vec2 left = glm::vec2(-vel.y, vel.x);
+		//glm::vec2 right = glm::vec2(vel.y, -vel.x);
 		glm::vec2 t;
 		//Identify distance to next cell according to velocity
-		t.x = vel.x > 0 ? 1-_dest.x : -(_dest.x);
-		t.y = vel.y > 0 ? 1-_dest.y : -(_dest.y);
+		t.x = left.x > 0 ? 1-_dest.x : -(_dest.x);
+		t.y = left.y > 0 ? 1-_dest.y : -(_dest.y);
 		//Convert this distance into time
-		t.x = vel.x != 0 ? t.x / vel.x : FLT_MAX;
-		t.y = vel.y != 0 ? t.y / vel.y : FLT_MAX;
+		t.x = left.x != 0 ? t.x / left.x : FLT_MAX;
+		t.y = left.y != 0 ? t.y / left.y : FLT_MAX;
 		//Extend pos to next cell
 		glm::ivec2 relativeBin;
 		relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
@@ -332,39 +388,61 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		//Identify index where that falls in 'relatives' array
 		if (destOffset.x == 1)
 		{
-			__relativeIndex = 2 - destOffset.y;
+			__relativeIndex_left = 2 - destOffset.y;
 		}
 		else if (destOffset.x == -1)
 		{
-			__relativeIndex = 6 - destOffset.y;
+			__relativeIndex_left = 6 - destOffset.y;
 		}
 		else
 		{
-			__relativeIndex = 2 - 2*destOffset.y;
+			__relativeIndex_left = 2 - 2*destOffset.y;
 		}
-	//Rotate about circle -FOV/2 (how many elements is this?
-		//180 degrees requires 2 on either side of central
-		__relativeIndex -= 2;
-		__relativeCount = 5;
-		//
-		glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
-		if (qPos.x > 0)qPos.x = 1;
-		else if(qPos.x < 0)qPos.x = -1;
-		if (qPos.y > 0)qPos.y = 1;
-		else if (qPos.y < 0)qPos.y = -1;
-		glm::ivec2 _qPos = qPos;
-		//+-1 on either side, based on the quadrant relative to velocity
-		//Temp(?) max all
-		__relativeIndex -= 1;
-		__relativeCount += 2;
-		//Correct for overflow
-		__relativeIndex += 64;// +8*8 to account for underflow (remainder op inside for loop handles overflow)
 	}
+	{
+		glm::vec2 right = glm::vec2(vel.y, -vel.x);
+		glm::vec2 t;
+		//Identify distance to next cell according to velocity
+		t.x = right.x > 0 ? 1 - _dest.x : -(_dest.x);
+		t.y = right.y > 0 ? 1 - _dest.y : -(_dest.y);
+		//Convert this distance into time
+		t.x = right.x != 0 ? t.x / right.x : FLT_MAX;
+		t.y = right.y != 0 ? t.y / right.y : FLT_MAX;
+		//Extend pos to next cell
+		glm::ivec2 relativeBin;
+		relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
+		relativeBin.y = t.y <= t.x ? t.y / abs(t.y) : 0;
+		glm::ivec2 destOffset = myBin + relativeBin;
+		assert(destOffset != glm::ivec2(0));
+		//Identify index where that falls in 'relatives' array
+		if (destOffset.x == 1)
+		{
+			__relativeIndex_right = 2 - destOffset.y;
+		}
+		else if (destOffset.x == -1)
+		{
+			__relativeIndex_right = 6 - destOffset.y;
+		}
+		else
+		{
+			__relativeIndex_right = 2 - 2 * destOffset.y;
+		}
+	}
+#endif
 	//Iterate FOV relatives across
+#ifndef METHOD2
 	for(unsigned int i = 0;i<__relativeCount;++i)
 	{
 		int currentIndex = __relativeIndex + i;
 		currentIndex = currentIndex % 8;
+#else
+	unsigned int __relativeCount = __relativeIndex_right - __relativeIndex_left + 9;
+	__relativeCount = __relativeCount <= 8 ? __relativeCount : 0;
+	for (unsigned int i = 0; i<__relativeCount; ++i)
+	{
+		unsigned int currentIndex = __relativeIndex_left + i;
+		currentIndex = currentIndex < 8 ? currentIndex : 0;
+#endif
 		glm::ivec2 currentBin = myBin + relatives[currentIndex];
 		if (currentBin.x >= 0 && currentBin.x < d_gridDim)
 		{
