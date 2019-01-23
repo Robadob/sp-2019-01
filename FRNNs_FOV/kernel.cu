@@ -91,8 +91,7 @@ __device__ __forceinline__ glm::ivec2 getGridPosition(glm::vec2 worldPos)
 }
 __device__ __forceinline__ glm::ivec2 _getGridPosition(glm::vec2 worldPos)
 {
-	//Clamp each grid coord to 0<=x<dim
-	return floor((worldPos / d_environmentWidth_float)*d_gridDim_float), glm::vec2(0), glm::vec2((float)d_gridDim - 1);
+	return floor((worldPos / d_environmentWidth_float)*d_gridDim_float);
 }
 __device__ __forceinline__ unsigned int getHash(glm::ivec2 gridPos)
 {
@@ -313,62 +312,59 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 			}
 		}
 	}
-	////Identify the relative element which contains dir
-	//{
-	//	//incremenet pos by vel * unit
-	//	glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
-	//	glm::vec2 t;
-	//	//Identify distance to next cell according to velocity
-	//	t.x = vel.x > 0 ? _dest.x : 1.0f - (_dest.x);
-	//	t.y = vel.y > 0 ? _dest.y : 1.0f - (_dest.y);
-	//	//Convert this distance into time
-	//	t.x = vel.x != 0 ? t.x / vel.x : FLT_MAX;
-	//	t.y = vel.y != 0 ? t.y / vel.y : FLT_MAX;
-	//	//Extend pos to next cell
-	//	glm::vec2 dest = pos + (vel*glm::min(t.x, t.y));
-	//	//Find which bin this resides in
-	//	glm::ivec2 destBin = _getGridPosition(dest);//Not clamped, may go out of bounds
-	//	//Convert this bin to a relative index
-	//	glm::ivec2 destOffset = myBin - destBin;
-	//	assert(destOffset != glm::ivec2(0));
-	//	//Identify index where that falls in 'relatives' array
-	//	if (destOffset.x == 1)
-	//	{
-	//		__relativeIndex = 2 - destOffset.y;
-	//	}
-	//	else if (destOffset.x == -1)
-	//	{
-	//		__relativeIndex = 6 - destOffset.y;
-	//	}
-	//	else
-	//	{
-	//		__relativeIndex = 2 - 2*destOffset.y;
-	//	}
-	////Rotate about circle -FOV/2 (how many elements is this?
-	//	//180 degrees requires 2 on either side of central
-	//	__relativeIndex -= 2;
-	//	__relativeCount = 5;
-	//	//
-	//	glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
-	//	if (qPos.x > 0)qPos.x = 1;
-	//	else if(qPos.x < 0)qPos.x = -1;
-	//	if (qPos.y > 0)qPos.y = 1;
-	//	else if (qPos.y < 0)qPos.y = -1;
-	//	glm::ivec2 _qPos = qPos;
-	//	//+-1 on either side, based on the quadrant relative to velocity
-	//	//Temp(?) max all
-	//	__relativeIndex -= 1;
-	//	__relativeCount += 2;
-	//	//Correct for overflow
-	//	__relativeIndex = (__relativeIndex + 8) % 8;//+8 to account for underflow (% is remainder op, not mod)
-	//}
-	__relativeCount = 8;
-	__relativeIndex = 0;
+	//Identify the relative element which contains dir
+	{
+		//incremenet pos by vel * unit
+		glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
+		glm::vec2 t;
+		//Identify distance to next cell according to velocity
+		t.x = vel.x > 0 ? 1-_dest.x : -(_dest.x);
+		t.y = vel.y > 0 ? 1-_dest.y : -(_dest.y);
+		//Convert this distance into time
+		t.x = vel.x != 0 ? t.x / vel.x : FLT_MAX;
+		t.y = vel.y != 0 ? t.y / vel.y : FLT_MAX;
+		//Extend pos to next cell
+		glm::ivec2 relativeBin;
+		relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
+		relativeBin.y = t.y <= t.x ? t.y / abs(t.y) : 0;
+		glm::ivec2 destOffset = myBin + relativeBin;
+		assert(destOffset != glm::ivec2(0));
+		//Identify index where that falls in 'relatives' array
+		if (destOffset.x == 1)
+		{
+			__relativeIndex = 2 - destOffset.y;
+		}
+		else if (destOffset.x == -1)
+		{
+			__relativeIndex = 6 - destOffset.y;
+		}
+		else
+		{
+			__relativeIndex = 2 - 2*destOffset.y;
+		}
+	//Rotate about circle -FOV/2 (how many elements is this?
+		//180 degrees requires 2 on either side of central
+		__relativeIndex -= 2;
+		__relativeCount = 5;
+		//
+		glm::vec2 qPos = pos - glm::vec2(glm::ivec2(pos));//Just want the decimal part
+		if (qPos.x > 0)qPos.x = 1;
+		else if(qPos.x < 0)qPos.x = -1;
+		if (qPos.y > 0)qPos.y = 1;
+		else if (qPos.y < 0)qPos.y = -1;
+		glm::ivec2 _qPos = qPos;
+		//+-1 on either side, based on the quadrant relative to velocity
+		//Temp(?) max all
+		__relativeIndex -= 1;
+		__relativeCount += 2;
+		//Correct for overflow
+		__relativeIndex += 64;// +8*8 to account for underflow (remainder op inside for loop handles overflow)
+	}
 	//Iterate FOV relatives across
 	for(unsigned int i = 0;i<__relativeCount;++i)
 	{
-		unsigned int currentIndex = __relativeIndex + i;
-		currentIndex = currentIndex >= 8 ? currentIndex - 8 : currentIndex;//(__relativeIndex+i)%8
+		int currentIndex = __relativeIndex + i;
+		currentIndex = currentIndex % 8;
 		glm::ivec2 currentBin = myBin + relatives[currentIndex];
 		if (currentBin.x >= 0 && currentBin.x < d_gridDim)
 		{
@@ -450,6 +446,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 	const unsigned int RNG_SEED = 12;
 	const unsigned int ENV_VOLUME = ENV_WIDTH * ENV_WIDTH;
 	CUDA_CALL(cudaMemcpyToSymbol(d_agentCount, &AGENT_COUNT, sizeof(unsigned int)));
+	printf("Env Width: %g\n", ENV_WIDTH_float);
 	CUDA_CALL(cudaMemcpyToSymbol(d_environmentWidth_float, &ENV_WIDTH_float, sizeof(float)));
 	glm::vec4 *d_agents_init = nullptr, *d_agents = nullptr, *d_out = nullptr;
 	unsigned int *d_keys = nullptr, *d_vals = nullptr;
@@ -502,6 +499,8 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 		CUDA_CALL(cudaMemcpyToSymbol(d_binWidth, &BIN_WIDTH, sizeof(float)));
 		CUDA_CALL(cudaMemcpyToSymbol(d_gridDim, &GRID_DIMS.x, sizeof(unsigned int)));
 		CUDA_CALL(cudaMemcpyToSymbol(d_gridDim_float, &GRID_DIMS_float, sizeof(float)));
+		printf("Grid Dims: %g\n", GRID_DIMS_float);
+		printf("Bin Width: %g\n", BIN_WIDTH);
 		const unsigned int BIN_COUNT = glm::compMul(GRID_DIMS);
 		cudaEvent_t start_PBM, end_PBM, start_kernel, end_kernel;
 		cudaEventCreate(&start_PBM);
