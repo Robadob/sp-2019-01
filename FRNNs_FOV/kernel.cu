@@ -19,7 +19,7 @@
 #include <cub/cub.cuh>
 #include <glm/gtc/epsilon.hpp>
 #include <glm/gtx/vector_angle.hpp>
-#define EPSILON 0.005f
+#define EPSILON 0.0001f
 //#define CIRCLES
 //Cuda call
 static void HandleCUDAError(const char *file,
@@ -149,9 +149,18 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 	if (distance <d_RADIUS && distance > MIN_DISTANCE)
 	{
 		//FOV Check
-		float angle = glm::angle(meVec, offset);
+		float angle = glm::angle(glm::normalize(meVec), glm::normalize(offset));
 		if (angle<1.5708)//d_HALF_FOV (90 degrees in radians)
 		{
+			unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+#ifdef _DEBUG
+			if (index == 309)
+			{
+				offset = glm::normalize(offset);
+				glm::vec2 t = glm::normalize(meVec);
+				printf("(%.3f, %.3f) (%.3f, %.3f) [%.3f, %.3f] (%.3f, %.3f)  (%.3f, %.3f)\n", msgPos.x, msgPos.y, msgVec.x, msgVec.y, angle, acos(dot(t, offset)), t.x, t.y, offset.x, offset.y);
+			}
+#endif
 			float perception = 45.0f;
 			//STEER
 			if ((angle < glm::radians(perception)) || (angle > 3.14159265f - glm::radians(perception))) {
@@ -175,7 +184,7 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 */
 __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *agents, glm::vec4 *out)
 {
-//#define STRIPS
+#define STRIPS
 	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	//Kill excess threads
 	if (index >= d_agentCount) return;
@@ -217,13 +226,9 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 					//Iterate messages in range
 					for (unsigned int i = binStart; i < binEnd; ++i)
 					{
-						//if (i != index)//Ignore self
+						//if (i != index)
 						{
 							float4 message = tex1Dfetch(d_texMessages, i);
-							//if(binHash==12)
-							//{
-							//	printf("(%.3f, %.3f, %.3f, %.3f)\n", message.x, message.y, message.z, message.w);
-							//}
 							glm::vec2 *_pos = (glm::vec2*)&message;
 							glm::vec2 *_vel = (glm::vec2*)&(message.z);
 
@@ -257,7 +262,6 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 		//update position
 		pos += vel*TIME_SCALER;
 	}
-
 out[index] = glm::vec4(pos, vel);
 }
 /**
@@ -265,7 +269,7 @@ out[index] = glm::vec4(pos, vel);
 * This removes the necessity of __launch_bounds__(64) as all threads in block are touching the same messages
 * However we end up with alot of (mostly) idle threads if one bin dense, others empty.
 */
-__global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
+__global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 {
 	glm::ivec2 relatives[8] = { 
 		glm::ivec2(0, 1),	//North
@@ -300,9 +304,9 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 			if (j != index)
 			{
 				float4 message = tex1Dfetch(d_texMessages, j);
-				//if (binHash == 12)
+				//if (index==357)
 				//{
-				//	printf("(%.3f, %.3f, %.3f, %.3f)\n", message.x, message.y, message.z, message.w);
+				//	printf("(%.3f, %.3f) (%.3f, %.3f)\n", message.x, message.y, message.z, message.w);
 				//}
 				glm::vec2 *_pos = (glm::vec2*)&message;
 				glm::vec2 *_vel = (glm::vec2*)&(message.z);
@@ -381,22 +385,21 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		t.y = left.y != 0 ? t.y / left.y : FLT_MAX;
 		//Extend pos to next cell
 		glm::ivec2 relativeBin;
-		relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
-		relativeBin.y = t.y <= t.x ? t.y / abs(t.y) : 0;
-		glm::ivec2 destOffset = myBin + relativeBin;
-		assert(destOffset != glm::ivec2(0));
+		relativeBin.x = t.x <= t.y ? left.x / abs(left.x) : 0;
+		relativeBin.y = t.y <= t.x ? left.y / abs(left.y) : 0;
+		assert(relativeBin != glm::ivec2(0));
 		//Identify index where that falls in 'relatives' array
-		if (destOffset.x == 1)
+		if (relativeBin.x == 1)
 		{
-			__relativeIndex_left = 2 - destOffset.y;
+			__relativeIndex_left = 2 - relativeBin.y;
 		}
-		else if (destOffset.x == -1)
+		else if (relativeBin.x == -1)
 		{
-			__relativeIndex_left = 6 - destOffset.y;
+			__relativeIndex_left = 6 - relativeBin.y;
 		}
 		else
 		{
-			__relativeIndex_left = 2 - 2*destOffset.y;
+			__relativeIndex_left = 2 - 2* relativeBin.y;
 		}
 	}
 	{
@@ -410,22 +413,21 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		t.y = right.y != 0 ? t.y / right.y : FLT_MAX;
 		//Extend pos to next cell
 		glm::ivec2 relativeBin;
-		relativeBin.x = t.x <= t.y ? t.x / abs(t.x) : 0;
-		relativeBin.y = t.y <= t.x ? t.y / abs(t.y) : 0;
-		glm::ivec2 destOffset = myBin + relativeBin;
-		assert(destOffset != glm::ivec2(0));
+		relativeBin.x = t.x <= t.y ? right.x / abs(right.x) : 0;
+		relativeBin.y = t.y <= t.x ? right.y / abs(right.y) : 0;
+		assert(relativeBin != glm::ivec2(0));
 		//Identify index where that falls in 'relatives' array
-		if (destOffset.x == 1)
+		if (relativeBin.x == 1)
 		{
-			__relativeIndex_right = 2 - destOffset.y;
+			__relativeIndex_right = 2 - relativeBin.y;
 		}
-		else if (destOffset.x == -1)
+		else if (relativeBin.x == -1)
 		{
-			__relativeIndex_right = 6 - destOffset.y;
+			__relativeIndex_right = 6 - relativeBin.y;
 		}
 		else
 		{
-			__relativeIndex_right = 2 - 2 * destOffset.y;
+			__relativeIndex_right = 2 - 2 * relativeBin.y;
 		}
 	}
 #endif
@@ -437,11 +439,13 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 		currentIndex = currentIndex % 8;
 #else
 	unsigned int __relativeCount = __relativeIndex_right - __relativeIndex_left + 9;
-	__relativeCount = __relativeCount <= 8 ? __relativeCount : 0;
+	__relativeCount = __relativeCount <= 8 ? __relativeCount : __relativeCount - 8;
+	assert( __relativeCount < 8);
 	for (unsigned int i = 0; i<__relativeCount; ++i)
 	{
 		unsigned int currentIndex = __relativeIndex_left + i;
-		currentIndex = currentIndex < 8 ? currentIndex : 0;
+		currentIndex = currentIndex < 8 ? currentIndex : currentIndex - 8;
+		assert(currentIndex < 8);
 #endif
 		glm::ivec2 currentBin = myBin + relatives[currentIndex];
 		if (currentBin.x >= 0 && currentBin.x < d_gridDim)
@@ -454,10 +458,13 @@ __global__ void neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 				unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
 				for(unsigned int j = binStart;j<binEnd;++j)
 				{
-					float4 message = tex1Dfetch(d_texMessages, j);
-					glm::vec2 *_pos = (glm::vec2*)&message;
-					glm::vec2 *_vel = (glm::vec2*)&(message.z);
-					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
+					//if(j == index)
+					{
+						float4 message = tex1Dfetch(d_texMessages, j);
+						glm::vec2 *_pos = (glm::vec2*)&message;
+						glm::vec2 *_vel = (glm::vec2*)&(message.z);
+						avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
+					}
 				}
 			}
 		}
@@ -646,6 +653,9 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 					CUDA_CALL(cudaDeviceSynchronize());//Wait for return
 					CUDA_CALL(cudaBindTexture(nullptr, d_texMessages, d_agents, sizeof(glm::vec4) * AGENT_COUNT));
 					CUDA_CALL(cudaBindTexture(nullptr, d_texPBM, d_PBM, sizeof(unsigned int) * (BIN_COUNT + 1)));
+					CUDA_CALL(cudaDeviceSynchronize());//Wait for return
+					////Unorder agents
+					//CUDA_CALL(cudaMemcpy(d_agents, d_agents_init, sizeof(glm::vec4)*AGENT_COUNT, cudaMemcpyDeviceToDevice));
 				}
 				cudaEventRecord(end_PBM);
 				cudaEventRecord(start_kernel);
@@ -658,7 +668,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
 					printf("control\n");
-					neighbourSearch_control << <gridSize, blockSize >> > (d_agents, d_out);
+					neighbourSearch_control << <gridSize, blockSize >> > (d_agents_init, d_out);
 					CUDA_CHECK();
 				}
 				else
@@ -669,8 +679,8 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
-					printf("test\n");
-					neighbourSearch << <gridSize, blockSize >> > (d_agents, d_out);
+					printf("Smart FOV\n");
+					neighbourSearch << <gridSize, blockSize >> > (d_agents_init, d_out);
 					CUDA_CHECK();
 				}
 				CUDA_CALL(cudaDeviceSynchronize());
@@ -697,26 +707,26 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 			pbmMillis /= ITERATIONS;
 			kernelMillis /= ITERATIONS;
 
-			{//Unorder messages
-				int blockSize;   // The launch configurator returned block size 
-				CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
-																													 // Round up according to array size
-				int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
-				//Copy messages from d_out to d_agents, in hash order
-				unsortMessages << <gridSize, blockSize >> > (d_keys, d_vals, d_PBM, d_out, d_agents);
-				CUDA_CHECK();
-				//Swap d_out and d_agents
-				{
-					glm::vec4 *t = d_out;
-					d_out = d_agents;
-					d_agents = t;
-				}
+			//{//Unorder messages
+			//	int blockSize;   // The launch configurator returned block size 
+			//	CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
+			//																										 // Round up according to array size
+			//	int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
+			//	//Copy messages from d_out to d_agents, in hash order
+			//	unsortMessages << <gridSize, blockSize >> > (d_keys, d_vals, d_PBM, d_out, d_agents);
+			//	CUDA_CHECK();
+			//	//Swap d_out and d_agents
+			//	{
+			//		glm::vec4 *t = d_out;
+			//		d_out = d_agents;
+			//		d_agents = t;
+			//	}
 				//Wait for return
 				CUDA_CALL(cudaDeviceSynchronize());
 				//Copy back to relative host array (for validation)
 				CUDA_CALL(cudaMemcpy(isControl ? h_out_control : h_out, d_out, sizeof(glm::vec4)*AGENT_COUNT, cudaMemcpyDeviceToHost));
 				CUDA_CALL(cudaDeviceSynchronize());
-			}
+			//}
 		}//for(MODE)
 		CUDA_CALL(cudaUnbindTexture(d_texPBM));
 		CUDA_CALL(cudaUnbindTexture(d_texMessages));
@@ -741,7 +751,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 				if (!(ret.x&&ret.y))
 				{
 					if (fails == 0)
-						printf("(%.5f, %.5f) vs (%.5f, %.5f)\n", h_out_control[i].x, h_out_control[i].y, h_out[i].x, h_out[i].y);
+						printf("#%d(%.5f, %.5f) vs (%.5f, %.5f)\n", i, h_out_control[i].x, h_out_control[i].y, h_out[i].x, h_out[i].y);
 					fails++;
 				}
 			}
@@ -772,15 +782,21 @@ int main()
 		std::ofstream f;
 		createLog(f);
 		assert(f.is_open());
-		for (unsigned int i = 20000; i <= 3000000; i += 20000)
+		//for (unsigned int i = 20000; i <= 3000000; i += 20000)
+		for (unsigned int i = 80000; i <= 80000; i++)
 		{
-			//Run i agents in a density with roughly 60 radial neighbours, and log
-			//Within this, it is tested over a range of proportional bin widths
-			runAgents(f, i, 20);
-			break;
+			//for (unsigned int j = 10; j <= 150; j++)
+			for(unsigned int j = 150;j<=150; j++)
+			{
+				//Run i agents in a density with roughly 60 radial neighbours, and log
+				//Within this, it is tested over a range of proportional bin widths
+				runAgents(f, i, j);
+			}
+			//break;
 		}
 	}
 	printf("fin\n");
+	cudaDeviceReset();
 	getchar();
 	return 0;
 }
