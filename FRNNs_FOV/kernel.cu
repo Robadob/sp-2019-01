@@ -20,6 +20,7 @@
 #include <glm/gtc/epsilon.hpp>
 #include <glm/gtx/vector_angle.hpp>
 #define EPSILON 0.0001f
+#define DEBUG_INDEX 0
 //#define CIRCLES
 //Cuda call
 static void HandleCUDAError(const char *file,
@@ -152,15 +153,6 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 		float angle = glm::angle(glm::normalize(meVec), glm::normalize(offset));
 		if (angle<1.5708)//d_HALF_FOV (90 degrees in radians)
 		{
-			unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-#ifdef _DEBUG
-			if (index == 309)
-			{
-				offset = glm::normalize(offset);
-				glm::vec2 t = glm::normalize(meVec);
-				printf("(%.3f, %.3f) (%.3f, %.3f) [%.3f, %.3f] (%.3f, %.3f)  (%.3f, %.3f)\n", msgPos.x, msgPos.y, msgVec.x, msgVec.y, angle, acos(dot(t, offset)), t.x, t.y, offset.x, offset.y);
-			}
-#endif
 			float perception = 45.0f;
 			//STEER
 			if ((angle < glm::radians(perception)) || (angle > 3.14159265f - glm::radians(perception))) {
@@ -184,7 +176,7 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 */
 __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *agents, glm::vec4 *out)
 {
-#define STRIPS
+//#define STRIPS
 	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	//Kill excess threads
 	if (index >= d_agentCount) return;
@@ -212,6 +204,10 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 					unsigned int binHash = getHash(glm::ivec2(currentBinX, currentBinY));
 					unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
 					unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
+#ifdef _DEBUG
+					if (index == DEBUG_INDEX)
+						printf("bin: (%d, %d)[%d, %d]\n", currentBinX, currentBinY, gridPosRelative.x, gridPosRelative.y);
+#endif
 #else
 
 					int currentBinX = gridPos.x - 1;
@@ -226,12 +222,26 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 					//Iterate messages in range
 					for (unsigned int i = binStart; i < binEnd; ++i)
 					{
-						//if (i != index)
+						if (i != index)
 						{
 							float4 message = tex1Dfetch(d_texMessages, i);
 							glm::vec2 *_pos = (glm::vec2*)&message;
 							glm::vec2 *_vel = (glm::vec2*)&(message.z);
-
+#ifdef _DEBUG
+							if (index == DEBUG_INDEX)
+							{
+								glm::vec2 offset = *_pos - pos;
+								float distance = glm::length(offset);
+								//FOV Check
+								float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
+								if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
+								{
+									printf("%d\n", i);
+								}
+								else
+									printf("-%d\n", i);
+							}
+#endif
 							avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 						}
 					}
@@ -262,7 +272,11 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 		//update position
 		pos += vel*TIME_SCALER;
 	}
-out[index] = glm::vec4(pos, vel);
+#ifdef _DEBUG
+	if (index == DEBUG_INDEX)
+		printf("pos(%.5f, %.5f), vel(%.5f, %.5f)\n", pos.x, pos.y, vel.x, vel.y);
+#endif
+	out[index] = glm::vec4(pos, vel);
 }
 /**
 * Kernel must be launched 1 block per bin
@@ -271,7 +285,7 @@ out[index] = glm::vec4(pos, vel);
 */
 __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, glm::vec4 *out)
 {
-	glm::ivec2 relatives[8] = { 
+	const glm::ivec2 relatives[8] = { 
 		glm::ivec2(0, 1),	//North
 		glm::ivec2(1,1),	//North East
 		glm::ivec2(1,0),    //East
@@ -281,7 +295,6 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 		glm::ivec2(-1, 0),	//West
 		glm::ivec2(-1, 1)	//North West
 	};
-	enum Quadrant {NW, NE, SW, SE};
 
 	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	//Kill excess threads
@@ -298,18 +311,32 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 		unsigned int binHash = getHash(myBin);
 		unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
 		unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
-		//unsigned int binCount = binEnd - binStart;
+#ifdef _DEBUG
+		if (index == DEBUG_INDEX)
+			printf("bin: (%d, %d)[%d, %d]\n", myBin.x, myBin.y, 0, 0);
+#endif
 		for (unsigned int j = binStart; j<binEnd; ++j)
 		{
 			if (j != index)
 			{
 				float4 message = tex1Dfetch(d_texMessages, j);
-				//if (index==357)
-				//{
-				//	printf("(%.3f, %.3f) (%.3f, %.3f)\n", message.x, message.y, message.z, message.w);
-				//}
 				glm::vec2 *_pos = (glm::vec2*)&message;
 				glm::vec2 *_vel = (glm::vec2*)&(message.z);
+#ifdef _DEBUG
+				if (index == DEBUG_INDEX)
+				{
+					glm::vec2 offset = *_pos - pos;
+					float distance = glm::length(offset);
+					//FOV Check
+					float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
+					if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
+					{
+						printf("%d\n", j);
+					}
+					else
+						printf("-%d\n", j);
+				}
+#endif
 				avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 			}
 		}
@@ -372,62 +399,125 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 	//incremenet pos by vel * unit
 	unsigned int __relativeIndex_left;
 	unsigned int __relativeIndex_right;
+	unsigned int __furthestIndex_left;
+	unsigned int __furthestIndex_right;
 	const glm::vec2 _dest = pos - glm::vec2(myBin)*d_binWidth;
 	{
 		glm::vec2 left = glm::vec2(-vel.y, vel.x);
-		//glm::vec2 right = glm::vec2(vel.y, -vel.x);
-		glm::vec2 t;
-		//Identify distance to next cell according to velocity
-		t.x = left.x > 0 ? 1-_dest.x : -(_dest.x);
-		t.y = left.y > 0 ? 1-_dest.y : -(_dest.y);
-		//Convert this distance into time
-		t.x = left.x != 0 ? t.x / left.x : FLT_MAX;
-		t.y = left.y != 0 ? t.y / left.y : FLT_MAX;
-		//Extend pos to next cell
-		glm::ivec2 relativeBin;
-		relativeBin.x = t.x <= t.y ? left.x / abs(left.x) : 0;
-		relativeBin.y = t.y <= t.x ? left.y / abs(left.y) : 0;
-		assert(relativeBin != glm::ivec2(0));
-		//Identify index where that falls in 'relatives' array
-		if (relativeBin.x == 1)
-		{
-			__relativeIndex_left = 2 - relativeBin.y;
+		{//First intersection
+			glm::ivec2 relativeBin;
+			glm::vec2 t;
+			//Identify distance to next cell according to velocity
+			t.x = left.x > 0 ? 1 - _dest.x : -(_dest.x);
+			t.y = left.y > 0 ? 1 - _dest.y : -(_dest.y);
+			//Convert this distance into time
+			t.x = left.x != 0 ? t.x / left.x : FLT_MAX;
+			t.y = left.y != 0 ? t.y / left.y : FLT_MAX;
+			//Extend pos to next cell
+			relativeBin.x = t.x <= t.y ? left.x / abs(left.x) : 0;
+			relativeBin.y = t.y <= t.x ? left.y / abs(left.y) : 0;
+			assert(relativeBin != glm::ivec2(0));
+			//Identify index where that falls in 'relatives' array
+			if (relativeBin.x == 1)
+			{
+				__relativeIndex_left = 2 - relativeBin.y;
+			}
+			else if (relativeBin.x == -1)
+			{
+				__relativeIndex_left = 6 - relativeBin.y;
+			}
+			else
+			{
+				__relativeIndex_left = 2 - 2 * relativeBin.y;
+			}
 		}
-		else if (relativeBin.x == -1)
-		{
-			__relativeIndex_left = 6 - relativeBin.y;
-		}
-		else
-		{
-			__relativeIndex_left = 2 - 2* relativeBin.y;
+		{//Last intersection
+		 //Identify distance to edge of radius
+			glm::ivec2 furthestBin = getGridPosition(pos + d_RADIUS * glm::normalize(left)) - myBin;
+			//Identify index where that falls in 'relatives' array
+			if (furthestBin.x == 1)
+			{
+				__furthestIndex_left = 2 - furthestBin.y;
+			}
+			else if (furthestBin.x == -1)
+			{
+				__furthestIndex_left = 6 - furthestBin.y;
+			}
+			else
+			{
+				__furthestIndex_left = 2 - 2 * furthestBin.y;
+			}
 		}
 	}
 	{
 		glm::vec2 right = glm::vec2(vel.y, -vel.x);
-		glm::vec2 t;
-		//Identify distance to next cell according to velocity
-		t.x = right.x > 0 ? 1 - _dest.x : -(_dest.x);
-		t.y = right.y > 0 ? 1 - _dest.y : -(_dest.y);
-		//Convert this distance into time
-		t.x = right.x != 0 ? t.x / right.x : FLT_MAX;
-		t.y = right.y != 0 ? t.y / right.y : FLT_MAX;
-		//Extend pos to next cell
-		glm::ivec2 relativeBin;
-		relativeBin.x = t.x <= t.y ? right.x / abs(right.x) : 0;
-		relativeBin.y = t.y <= t.x ? right.y / abs(right.y) : 0;
-		assert(relativeBin != glm::ivec2(0));
-		//Identify index where that falls in 'relatives' array
-		if (relativeBin.x == 1)
-		{
-			__relativeIndex_right = 2 - relativeBin.y;
+		{//First intersection
+			glm::ivec2 relativeBin;
+			glm::vec2 t;
+			//Identify distance to next cell according to velocity
+			t.x = right.x > 0 ? 1 - _dest.x : -(_dest.x);
+			t.y = right.y > 0 ? 1 - _dest.y : -(_dest.y);
+			//Convert this distance into time
+			t.x = right.x != 0 ? t.x / right.x : FLT_MAX;
+			t.y = right.y != 0 ? t.y / right.y : FLT_MAX;
+			//Extend pos to next cell
+			relativeBin.x = t.x <= t.y ? right.x / abs(right.x) : 0;
+			relativeBin.y = t.y <= t.x ? right.y / abs(right.y) : 0;
+			assert(relativeBin != glm::ivec2(0));
+			//Identify index where that falls in 'relatives' array
+			if (relativeBin.x == 1)
+			{
+				__relativeIndex_right = 2 - relativeBin.y;
+			}
+			else if (relativeBin.x == -1)
+			{
+				__relativeIndex_right = 6 - relativeBin.y;
+			}
+			else
+			{
+				__relativeIndex_right = 2 - 2 * relativeBin.y;
+			}
 		}
-		else if (relativeBin.x == -1)
-		{
-			__relativeIndex_right = 6 - relativeBin.y;
+		{//Last intersection
+		 //Identify distance to edge of radius
+			glm::ivec2 furthestBin = getGridPosition(pos + d_RADIUS * glm::normalize(right)) - myBin;
+			//Identify index where that falls in 'relatives' array
+			if (furthestBin.x == 1)
+			{
+				__furthestIndex_right = 2 - furthestBin.y;
+			}
+			else if (furthestBin.x == -1)
+			{
+				__furthestIndex_right = 6 - furthestBin.y;
+			}
+			else
+			{
+				__furthestIndex_right = 2 - 2 * furthestBin.y;
+			}
 		}
-		else
-		{
-			__relativeIndex_right = 2 - 2 * relativeBin.y;
+	}
+	unsigned int __relativeCount;
+	{//Detect which indexes creates the widest range
+		{//left
+			if(__relativeIndex_left != __furthestIndex_left)
+			{
+				unsigned int _relativeCount = __relativeIndex_right - __relativeIndex_left + 9;
+				_relativeCount = _relativeCount <= 8 ? _relativeCount : _relativeCount - 8;
+				unsigned int __furthestCount = __relativeIndex_right - __furthestIndex_left + 9;
+				__furthestCount = __furthestCount <= 8 ? __furthestCount : __furthestCount - 8;
+				__relativeIndex_left = _relativeCount > __furthestCount ? __relativeIndex_left : __furthestIndex_left;
+			}
+		}
+		{//right
+			//if (__relativeIndex_right != __furthestIndex_right)
+			{
+				unsigned int _relativeCount = __relativeIndex_right - __relativeIndex_left + 9;
+				_relativeCount = _relativeCount <= 8 ? _relativeCount : _relativeCount - 8;
+				unsigned int __furthestCount = __furthestIndex_right - __relativeIndex_left + 9;
+				__furthestCount = __furthestCount <= 8 ? __furthestCount : __furthestCount - 8;
+				__relativeCount = _relativeCount > __furthestCount ? _relativeCount : __furthestCount;
+				__relativeIndex_right = _relativeCount > __furthestCount ? __relativeIndex_right : __furthestIndex_right;
+			}
 		}
 	}
 #endif
@@ -438,9 +528,7 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 		int currentIndex = __relativeIndex + i;
 		currentIndex = currentIndex % 8;
 #else
-	unsigned int __relativeCount = __relativeIndex_right - __relativeIndex_left + 9;
-	__relativeCount = __relativeCount <= 8 ? __relativeCount : __relativeCount - 8;
-	assert( __relativeCount < 8);
+	assert( __relativeCount < 9);
 	for (unsigned int i = 0; i<__relativeCount; ++i)
 	{
 		unsigned int currentIndex = __relativeIndex_left + i;
@@ -456,15 +544,31 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 				unsigned int binHash = getHash(currentBin);
 				unsigned int binStart = tex1Dfetch(d_texPBM, binHash);
 				unsigned int binEnd = tex1Dfetch(d_texPBM, binHash + 1);
+#ifdef _DEBUG
+				if (index == DEBUG_INDEX)
+					printf("bin: (%d, %d)[%d, %d]\n", currentBin.x, currentBin.y, relatives[currentIndex].x, relatives[currentIndex].y);
+#endif
 				for(unsigned int j = binStart;j<binEnd;++j)
 				{
-					//if(j == index)
+					float4 message = tex1Dfetch(d_texMessages, j);
+					glm::vec2 *_pos = (glm::vec2*)&message;
+					glm::vec2 *_vel = (glm::vec2*)&(message.z);
+#ifdef _DEBUG
+					if (index == DEBUG_INDEX)
 					{
-						float4 message = tex1Dfetch(d_texMessages, j);
-						glm::vec2 *_pos = (glm::vec2*)&message;
-						glm::vec2 *_vel = (glm::vec2*)&(message.z);
-						avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
+						glm::vec2 offset = *_pos - pos;
+						float distance = glm::length(offset);
+						//FOV Check
+						float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
+						if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
+						{
+							printf("%d\n", j);
+						}
+						else
+							printf("-%d\n", j);
 					}
+#endif
+					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
 				}
 			}
 		}
@@ -491,8 +595,10 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 		//update position
 		pos += vel*TIME_SCALER;
 	}
-	
-	
+#ifdef _DEBUG
+	if (index == DEBUG_INDEX)
+		printf("pos(%.5f, %.5f), vel(%.5f, %.5f)\n", pos.x, pos.y, vel.x, vel.y);
+#endif
 	//Output
 	out[index] = glm::vec4(pos, vel);
 }
@@ -538,8 +644,8 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 	CUDA_CALL(cudaMalloc(&d_agents_init, sizeof(glm::vec4) * AGENT_COUNT));
 	CUDA_CALL(cudaMalloc(&d_agents, sizeof(glm::vec4) * AGENT_COUNT));
 	CUDA_CALL(cudaMalloc(&d_out, sizeof(glm::vec4) * AGENT_COUNT));
-	glm::vec2 *h_out = (glm::vec2*)malloc(sizeof(glm::vec4) * AGENT_COUNT);
-	glm::vec2 *h_out_control = (glm::vec2*)malloc(sizeof(glm::vec4) * AGENT_COUNT);
+	glm::vec4 *h_out = (glm::vec4*)malloc(sizeof(glm::vec4) * AGENT_COUNT);
+	glm::vec4 *h_out_control = (glm::vec4*)malloc(sizeof(glm::vec4) * AGENT_COUNT);
 	//Init agents
 	{
 		//Generate curand
@@ -616,7 +722,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 		for (unsigned int _j = 1; _j < UINT_MAX; --_j)
 		{
 			//1 = control
-			//0 = threadblock
+			//0 = smart FOV
 			bool isControl = _j != 0;
 
 			//For 200 iterations (to produce an average)
@@ -748,10 +854,14 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 				if (isnan(h_out[i].x) || isnan(h_out[i].y))
 					printf("err nan\n");
 				auto ret = glm::epsilonEqual(h_out[i], h_out_control[i], EPSILON);
-				if (!(ret.x&&ret.y))
+				if (!(ret.x&&ret.y&&ret.z&&ret.w))
 				{
 					if (fails == 0)
-						printf("#%d(%.5f, %.5f) vs (%.5f, %.5f)\n", i, h_out_control[i].x, h_out_control[i].y, h_out[i].x, h_out[i].y);
+					{
+						printf("#%d(%.5f, %.5f, %.5f, %.5f) vs (%.5f, %.5f, %.5f, %.5f)\n", i, 
+							h_out_control[i].x, h_out_control[i].y, h_out_control[i].z, h_out_control[i].w, 
+							h_out[i].x, h_out[i].y, h_out[i].z, h_out[i].w);
+					}
 					fails++;
 				}
 			}
@@ -782,15 +892,15 @@ int main()
 		std::ofstream f;
 		createLog(f);
 		assert(f.is_open());
-		//for (unsigned int i = 20000; i <= 3000000; i += 20000)
-		for (unsigned int i = 80000; i <= 80000; i++)
+		for (unsigned int i = 20000; i <= 3000000; i += 20000)
+		//for (unsigned int i = 160000; i <= 160000; i++)
 		{
-			//for (unsigned int j = 10; j <= 150; j++)
-			for(unsigned int j = 150;j<=150; j++)
+			for (unsigned int j = 10; j <= 150; j+=10)
+			//for(unsigned int j = 10;j <= 10; j++)
 			{
 				//Run i agents in a density with roughly 60 radial neighbours, and log
 				//Within this, it is tested over a range of proportional bin widths
-				runAgents(f, i, j);
+				runAgents(f, i, (float)j);
 			}
 			//break;
 		}
