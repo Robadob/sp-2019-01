@@ -20,7 +20,7 @@
 #include <glm/gtc/epsilon.hpp>
 #include <glm/gtx/vector_angle.hpp>
 #define EPSILON 0.0001f
-#define DEBUG_INDEX 0
+#define DEBUG_INDEX 80216
 //#define CIRCLES
 //Cuda call
 static void HandleCUDAError(const char *file,
@@ -182,6 +182,10 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 	if (index >= d_agentCount) return;
 	glm::vec2 pos = glm::vec2(agents[index].x, agents[index].y);
 	glm::vec2 vel = glm::vec2(agents[index].z, agents[index].w);
+#ifdef _DEBUG
+if (index == DEBUG_INDEX)
+		printf("me: (%.5f, %.5f)(%.5f, %.5f)\n", pos.x, pos.y, vel.x, vel.y);
+#endif
 	glm::vec2 navigate_velocity = glm::vec2(0);
 	glm::vec2 avoid_velocity = glm::vec2(0);
 	glm::ivec2 gridPos = getGridPosition(pos);
@@ -236,10 +240,10 @@ __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *
 								float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
 								if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
 								{
-									printf("%d\n", i);
+									printf("%d (%.5f, %.5f)(%.5f, %.5f)\n", i, _pos->x, _pos->y, _vel->x, _vel->y);
 								}
 								else
-									printf("-%d\n", i);
+									printf("-%d (%.5f, %.5f)(%.5f, %.5f)\n", i, _pos->x, _pos->y, _vel->x, _vel->y);
 							}
 #endif
 							avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
@@ -303,6 +307,10 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 	//My data
 	glm::vec2 pos = glm::vec2(agents[index].x, agents[index].y);
 	glm::vec2 vel = glm::vec2(agents[index].z, agents[index].w);
+#ifdef _DEBUG
+	if (index == DEBUG_INDEX)
+		printf("me: (%.5f, %.5f)(%.5f, %.5f)\n", pos.x, pos.y, vel.x, vel.y);
+#endif
 	glm::vec2 navigate_velocity = glm::vec2(0);
 	glm::vec2 avoid_velocity = glm::vec2(0);
 	glm::ivec2 myBin = getGridPosition(pos);
@@ -331,10 +339,10 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 					float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
 					if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
 					{
-						printf("%d\n", j);
+						printf("%d (%.5f, %.5f)(%.5f, %.5f)\n", j, _pos->x, _pos->y, _vel->x, _vel->y);
 					}
 					else
-						printf("-%d\n", j);
+						printf("-%d (%.5f, %.5f)(%.5f, %.5f)\n", j, _pos->x, _pos->y, _vel->x, _vel->y);
 				}
 #endif
 				avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
@@ -424,7 +432,7 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 			}
 			else if (relativeBin.x == -1)
 			{
-				__relativeIndex_left = 6 - relativeBin.y;
+				__relativeIndex_left = 6 + relativeBin.y;
 			}
 			else
 			{
@@ -441,7 +449,7 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 			}
 			else if (furthestBin.x == -1)
 			{
-				__furthestIndex_left = 6 - furthestBin.y;
+				__furthestIndex_left = 6 + furthestBin.y;
 			}
 			else
 			{
@@ -471,7 +479,7 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 			}
 			else if (relativeBin.x == -1)
 			{
-				__relativeIndex_right = 6 - relativeBin.y;
+				__relativeIndex_right = 6 + relativeBin.y;
 			}
 			else
 			{
@@ -488,7 +496,7 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 			}
 			else if (furthestBin.x == -1)
 			{
-				__furthestIndex_right = 6 - furthestBin.y;
+				__furthestIndex_right = 6 + furthestBin.y;
 			}
 			else
 			{
@@ -562,10 +570,10 @@ __global__ void __launch_bounds__(64) neighbourSearch(const glm::vec4 *agents, g
 						float angle = glm::angle(glm::normalize(vel), glm::normalize(offset));
 						if (angle < 1.5708 && distance <d_RADIUS && distance > MIN_DISTANCE)//d_HALF_FOV (90 degrees in radians)
 						{
-							printf("%d\n", j);
+							printf("%d (%.5f, %.5f)(%.5f, %.5f)\n", j, _pos->x, _pos->y, _vel->x, _vel->y);
 						}
 						else
-							printf("-%d\n", j);
+							printf("-%d (%.5f, %.5f)(%.5f, %.5f)\n", j, _pos->x, _pos->y, _vel->x, _vel->y);
 					}
 #endif
 					avoidSum(pos, vel, *_pos, *_vel, navigate_velocity, avoid_velocity);
