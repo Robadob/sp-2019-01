@@ -768,8 +768,6 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 					CUDA_CALL(cudaBindTexture(nullptr, d_texMessages, d_agents, sizeof(glm::vec4) * AGENT_COUNT));
 					CUDA_CALL(cudaBindTexture(nullptr, d_texPBM, d_PBM, sizeof(unsigned int) * (BIN_COUNT + 1)));
 					CUDA_CALL(cudaDeviceSynchronize());//Wait for return
-					////Unorder agents
-					//CUDA_CALL(cudaMemcpy(d_agents, d_agents_init, sizeof(glm::vec4)*AGENT_COUNT, cudaMemcpyDeviceToDevice));
 				}
 				cudaEventRecord(end_PBM);
 				cudaEventRecord(start_kernel);
@@ -777,24 +775,32 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 				{
 					//Each message samples radial neighbours (static model)
 					int blockSize;   // The launch configurator returned block size 
-					CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
+					CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, neighbourSearch_control, 32, 0));//Randomly 32
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
-					printf("control\n");
+#ifdef _DEBUG
+					printf("Control\n");
 					neighbourSearch_control << <gridSize, blockSize >> > (d_agents_init, d_out);
+#else
+					neighbourSearch_control << <gridSize, blockSize >> > (d_agents, d_out);
+#endif
 					CUDA_CHECK();
 				}
 				else
 				{
 					//Each message samples radial neighbours (static model)
 					int blockSize;   // The launch configurator returned block size 
-					CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
+					CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, neighbourSearch, 32, 0));//Randomly 32
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
+#ifdef _DEBUG
 					printf("Smart FOV\n");
 					neighbourSearch << <gridSize, blockSize >> > (d_agents_init, d_out);
+#else
+					neighbourSearch << <gridSize, blockSize >> > (d_agents, d_out);
+#endif
 					CUDA_CHECK();
 				}
 				CUDA_CALL(cudaDeviceSynchronize());
@@ -820,21 +826,23 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 			kernelMillis_control /= ITERATIONS;
 			pbmMillis /= ITERATIONS;
 			kernelMillis /= ITERATIONS;
-
-			//{//Unorder messages
-			//	int blockSize;   // The launch configurator returned block size 
-			//	CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
-			//																										 // Round up according to array size
-			//	int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
-			//	//Copy messages from d_out to d_agents, in hash order
-			//	unsortMessages << <gridSize, blockSize >> > (d_keys, d_vals, d_PBM, d_out, d_agents);
-			//	CUDA_CHECK();
-			//	//Swap d_out and d_agents
-			//	{
-			//		glm::vec4 *t = d_out;
-			//		d_out = d_agents;
-			//		d_agents = t;
-			//	}
+#ifndef _DEBUG
+			{//Unorder messages
+				int blockSize;   // The launch configurator returned block size 
+				CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
+																													 // Round up according to array size
+				int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
+				//Copy messages from d_out to d_agents, in hash order
+				unsortMessages << <gridSize, blockSize >> > (d_keys, d_vals, d_PBM, d_out, d_agents);
+				CUDA_CHECK();
+				//Swap d_out and d_agents
+				{
+					glm::vec4 *t = d_out;
+					d_out = d_agents;
+					d_agents = t;
+				}
+			}
+#endif
 				//Wait for return
 				CUDA_CALL(cudaDeviceSynchronize());
 				//Copy back to relative host array (for validation)
