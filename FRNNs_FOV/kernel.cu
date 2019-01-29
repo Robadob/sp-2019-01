@@ -21,6 +21,7 @@
 #include <glm/gtx/vector_angle.hpp>
 #define EPSILON 0.0001f
 #define DEBUG_INDEX 80216
+#define UNSORT_MESSAGES
 //#define CIRCLES
 //Cuda call
 static void HandleCUDAError(const char *file,
@@ -779,7 +780,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
-#ifdef _DEBUG
+#ifdef UNSORT_MESSAGES
 					printf("Control\n");
 					neighbourSearch_control << <gridSize, blockSize >> > (d_agents_init, d_out);
 #else
@@ -795,7 +796,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 																														 // Round up according to array size
 					int gridSize = (AGENT_COUNT + blockSize - 1) / blockSize;
 					//Copy messages from d_agents to d_out, in hash order
-#ifdef _DEBUG
+#ifdef UNSORT_MESSAGES
 					printf("Smart FOV\n");
 					neighbourSearch << <gridSize, blockSize >> > (d_agents_init, d_out);
 #else
@@ -826,7 +827,7 @@ void run(std::ofstream &f, const unsigned int ENV_WIDTH, const unsigned int AGEN
 			kernelMillis_control /= ITERATIONS;
 			pbmMillis /= ITERATIONS;
 			kernelMillis /= ITERATIONS;
-#ifndef _DEBUG
+#ifndef UNSORT_MESSAGES
 			{//Unorder messages
 				int blockSize;   // The launch configurator returned block size 
 				CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blockSize, reorderLocationMessages, 32, 0));//Randomly 32
