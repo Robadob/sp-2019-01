@@ -43,7 +43,7 @@ static void HandleCUDAError(const char *file,
 
 //Logging (found in log.cpp)
 #include <fstream>
-void createLog(std::ofstream &f);
+void createLog(std::ofstream &f, const bool &isStrips);
 void log(std::ofstream &f,
 	const unsigned int &estRadialNeighbours,
 	const unsigned int &agentCount,
@@ -176,7 +176,7 @@ __forceinline__ __device__ void avoidSum(const glm::vec2 &mePos, const glm::vec2
 */
 __global__  void __launch_bounds__(64) neighbourSearch_control(const glm::vec4 *agents, glm::vec4 *out)
 {
-//#define STRIPS
+#define STRIPS
 	unsigned int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	//Kill excess threads
 	if (index >= d_agentCount) return;
@@ -898,7 +898,11 @@ int main()
 {
 	{
 		std::ofstream f;
-		createLog(f);
+#ifdef STRIPS
+		createLog(f, true);
+#else
+		createLog(f, false);
+#endif
 		assert(f.is_open());
 		for (unsigned int i = 20000; i <= 3000000; i += 20000)
 		//for (unsigned int i = 160000; i <= 160000; i++)

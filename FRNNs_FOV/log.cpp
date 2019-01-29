@@ -2,7 +2,7 @@
 #include <ctime>
 #include <string>
 #include <fstream>
-void createLog(std::ofstream &f)
+void createLog(std::ofstream &f, const bool &isStrips = false)
 {
     std::string path = std::string("[2D]") + std::to_string(time(nullptr)) + ".csv";
     f.open(path);
@@ -11,8 +11,16 @@ void createLog(std::ofstream &f)
     f << "Est Radial Neighbours,";
     f << "Agent Count,";
     f << "Env Width,";
-	f << "PBM_control (ms),";
-	f << "Kernel_control (ms),";
+	if(isStrips)
+	{
+		f << "PBM_control_strips (ms),";
+		f << "Kernel_control_strips (ms),";
+	}
+	else
+	{
+		f << "PBM_control (ms),";
+		f << "Kernel_control (ms),";
+	}
     f << "PBM (ms),";
     f << "Kernel (ms),";
     f << "Failures,";
